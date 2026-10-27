@@ -85,6 +85,11 @@
       <template #title>股票筛选</template>
     </el-menu-item>
 
+    <el-menu-item index="/stock-data/list">
+      <el-icon><DataAnalysis /></el-icon>
+      <template #title>股票数据</template>
+    </el-menu-item>
+
     <el-menu-item index="/favorites">
       <el-icon><Star /></el-icon>
       <template #title>股票关注列表</template>

@@ -358,8 +358,8 @@ class UnifiedConfigManager:
         )
         data_sources.append(akshare_config)
 
-        # Tushare (如果有配置) - 同时检查 settings.json 和 .env 文件
-        tushare_token = settings.get("tushare_token") or os.environ.get("TUSHARE_TOKEN") or os.environ.get("TUSHARE_API_KEY")
+        # Tushare 仅从 .env 环境配置读取
+        tushare_token = os.environ.get("TUSHARE_TOKEN")
         if tushare_token:
             tushare_config = DataSourceConfig(
                 name="Tushare",
@@ -480,8 +480,8 @@ class UnifiedConfigManager:
         )
         data_sources.append(akshare_config)
 
-        # Tushare (如果有配置) - 同时检查 settings.json 和 .env 文件
-        tushare_token = settings.get("tushare_token") or os.environ.get("TUSHARE_TOKEN") or os.environ.get("TUSHARE_API_KEY")
+        # Tushare 仅从 .env 环境配置读取
+        tushare_token = os.environ.get("TUSHARE_TOKEN")
         if tushare_token:
             tushare_config = DataSourceConfig(
                 name="Tushare",

@@ -99,6 +99,20 @@ export interface KlineBar {
   amount?: number
 }
 
+export interface StockListItem {
+  symbol: string
+  full_symbol?: string
+  name: string
+  market?: string
+  industry?: string
+  area?: string
+  list_date?: string
+  total_mv?: number
+  pe_ttm?: number
+  pe?: number
+  source?: string
+}
+
 export interface KlineResponse {
   symbol: string  // 主字段：6位股票代码
   code?: string   // 兼容字段（已废弃）
@@ -191,6 +205,9 @@ export interface StockFinancialsResponse {
 }
 
 export const stocksApi = {
+  async getList(page = 1, pageSize = 20) {
+    return ApiClient.get<StockListItem[]>('/api/stock-data/list', { page, page_size: pageSize })
+  },
   /**
    * 获取股票行情
    * @param symbol 6位股票代码

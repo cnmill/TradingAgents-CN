@@ -523,25 +523,22 @@ class DataSourceManager:
         else:
             logger.info("ℹ️ LOCAL数据源已在数据库中禁用")
 
-        # 从数据库读取数据源配置
-        datasource_configs = self._get_datasource_configs_from_db()
-
-        # 检查Tushare
-        if 'tushare' in enabled_sources_in_db:
+        # 检查Tushare（仅使用 .env 环境配置）
+        if os.getenv('TUSHARE_ENABLED', 'true').lower() in ('true', '1', 'yes'):
             try:
-                import tushare as ts
-                # 优先从数据库配置读取 API Key，其次从环境变量读取
-                token = datasource_configs.get('tushare', {}).get('api_key') or os.getenv('TUSHARE_TOKEN')
+                import tushare
+                from tradingagents.config.tushare_config import get_tushare_token
+                token = get_tushare_token()
                 if token:
                     available.append(ChinaDataSource.TUSHARE)
-                    source = "数据库配置" if datasource_configs.get('tushare', {}).get('api_key') else "环境变量"
+                    source = "环境变量"
                     logger.info(f"✅ Tushare数据源可用且已启用 (API Key来源: {source})")
                 else:
-                    logger.warning("⚠️ Tushare数据源不可用: API Key未配置（数据库和环境变量均未找到）")
+                    logger.warning("⚠️ Tushare数据源不可用: 请在 .env 中配置 TUSHARE_TOKEN")
             except ImportError:
                 logger.warning("⚠️ Tushare数据源不可用: 库未安装")
         else:
-            logger.info("ℹ️ Tushare数据源已在数据库中禁用")
+            logger.info("ℹ️ Tushare数据源已在 .env 中禁用")
 
         # 检查AKShare
         if 'akshare' in enabled_sources_in_db:

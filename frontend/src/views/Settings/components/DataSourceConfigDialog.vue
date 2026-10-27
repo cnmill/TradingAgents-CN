@@ -89,15 +89,20 @@
       <!-- 连接配置 -->
       <el-divider content-position="left">连接配置</el-divider>
 
-      <el-form-item v-if="!isQmtType" label="API端点" prop="endpoint">
+      <el-form-item v-if="!isQmtType && formData.type !== 'tushare'" label="API端点" prop="endpoint">
         <el-input
           v-model="formData.endpoint"
           placeholder="请输入API端点URL"
+          clearable
         />
       </el-form-item>
 
+      <div v-if="formData.type === 'tushare'" class="form-tip">
+        Tushare 使用 .env 中的 TUSHARE_TOKEN 和 TUSHARE_HTTP_URL；连接测试也读取这两项配置。
+      </div>
+
       <!-- API Key 输入框 -->
-      <el-form-item :label="apiKeyLabel" prop="api_key">
+      <el-form-item v-if="formData.type !== 'tushare'" :label="apiKeyLabel" prop="api_key">
         <el-input
           v-model="formData.api_key"
           type="password"
@@ -576,6 +581,10 @@ const createFormDataFromConfig = (config?: any) => {
 
 const buildPayload = () => {
   const payload: any = { ...formData.value }
+  if (payload.type === 'tushare') {
+    delete payload.api_key
+    delete payload.endpoint
+  }
   const qmtFieldMap: Record<string, string> = {
     qmt_data_dir: 'data_dir',
     qmt_listen_port: 'listen_port',

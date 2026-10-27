@@ -226,6 +226,26 @@ const routes: RouteRecordRaw[] = [
     ]
   },
   {
+    path: '/stock-data',
+    name: 'StockData',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: { title: '股票数据', icon: 'DataAnalysis', requiresAuth: true, transition: 'fade' },
+    children: [
+      {
+        path: 'list',
+        name: 'StockDataList',
+        component: () => import('@/views/Stocks/List.vue'),
+        meta: { title: '股票数据列表', requiresAuth: true }
+      },
+      {
+        path: '',
+        name: 'StockDataHome',
+        component: () => import('@/views/Stocks/Data.vue'),
+        meta: { title: '股票数据', requiresAuth: true }
+      }
+    ]
+  },
+  {
     path: '/stocks',
     name: 'Stocks',
     component: () => import('@/layouts/BasicLayout.vue'),

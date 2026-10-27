@@ -233,6 +233,7 @@ class Settings(BaseSettings):
 
     # Tushare基础配置
     TUSHARE_TOKEN: str = Field(default="", description="Tushare API Token")
+    TUSHARE_HTTP_URL: str = Field(default="", description="Tushare中转API地址，留空使用SDK默认地址")
     TUSHARE_ENABLED: bool = Field(default=True, description="启用Tushare数据源")
     TUSHARE_TIER: str = Field(default="standard", description="Tushare积分等级 (free/basic/standard/premium/vip)")
     TUSHARE_RATE_LIMIT_SAFETY_MARGIN: float = Field(default=0.8, ge=0.1, le=1.0, description="速率限制安全边际")
@@ -495,7 +496,8 @@ if settings.PROXY_ENABLED:
         os.environ['https_proxy'] = settings.HTTPS_PROXY  # 小写版本
 else:
     # 🔧 代理未启用，清除环境变量中的代理设置（避免系统代理干扰）
-    for key in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
+    for key in ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+                'http_proxy', 'https_proxy', 'all_proxy']:
         if key in os.environ:
             del os.environ[key]
 

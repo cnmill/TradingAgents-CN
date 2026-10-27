@@ -71,7 +71,7 @@ dependencies = [
     "feedparser>=6.0.11",
     "parsel>=1.10.0",
     "praw>=7.8.1",
-    "requests>=2.32.4",
+    "requests[socks]>=2.32.4",  # Tushare 中转请求支持 SOCKS 代理
 
     # 文档和格式化
     "markdown>=3.4.0",

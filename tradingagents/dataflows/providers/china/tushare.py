@@ -16,6 +16,12 @@ import logging
 
 from ..base_provider import BaseStockDataProvider
 from tradingagents.config.providers_config import get_provider_config
+from tradingagents.config.tushare_config import (
+    configure_tushare_http_url,
+    get_tushare_token,
+    resolve_tushare_http_url,
+    test_tushare_client,
+)
 
 # 尝试导入tushare
 try:
@@ -51,7 +57,8 @@ class TushareProvider(BaseStockDataProvider):
         super().__init__("Tushare")
         self.api = None
         self.config = get_provider_config("tushare")
-        self.token_source = None  # 记录 Token 来源: 'database' 或 'env'
+        self.token_source = None  # Token 仅来自 .env 环境配置
+        self.last_error = None
         self._event_loop_closed = False  # 🔥 标记事件循环是否已关闭
 
         if not TUSHARE_AVAILABLE:
@@ -66,130 +73,68 @@ class TushareProvider(BaseStockDataProvider):
         """
         return self._event_loop_closed
 
-    def _get_token_from_database(self) -> Optional[str]:
-        """
-        从数据库读取 Tushare Token
-
-        优先级：数据库配置 > 环境变量
-        这样用户在 Web 后台修改配置后可以立即生效
-        """
-        try:
-            self.logger.info("🔍 [DB查询] 开始从数据库读取 Token...")
-            from app.core.database import get_mongo_db_sync
-            db = get_mongo_db_sync()
-            config_collection = db.system_configs
-
-            # 获取最新的激活配置
-            self.logger.info("🔍 [DB查询] 查询 is_active=True 的配置...")
-            config_data = config_collection.find_one(
-                {"is_active": True},
-                sort=[("version", -1)]
-            )
-
-            if config_data:
-                self.logger.info(f"✅ [DB查询] 找到激活配置，版本: {config_data.get('version')}")
-                if config_data.get('data_source_configs'):
-                    self.logger.info(f"✅ [DB查询] 配置中有 {len(config_data['data_source_configs'])} 个数据源")
-                    for ds_config in config_data['data_source_configs']:
-                        ds_type = ds_config.get('type')
-                        self.logger.info(f"🔍 [DB查询] 检查数据源: {ds_type}")
-                        if ds_type == 'tushare':
-                            api_key = ds_config.get('api_key')
-                            self.logger.info(f"✅ [DB查询] 找到 Tushare 配置，api_key 长度: {len(api_key) if api_key else 0}")
-                            if api_key and not api_key.startswith("your_"):
-                                self.logger.info(f"✅ [DB查询] Token 有效 (长度: {len(api_key)})")
-                                return api_key
-                            else:
-                                self.logger.warning(f"⚠️ [DB查询] Token 无效或为占位符")
-                else:
-                    self.logger.warning("⚠️ [DB查询] 配置中没有 data_source_configs")
-            else:
-                self.logger.warning("⚠️ [DB查询] 未找到激活的配置")
-
-            self.logger.info("⚠️ [DB查询] 数据库中未找到有效的 Tushare Token")
-        except Exception as e:
-            self.logger.error(f"❌ [DB查询] 从数据库读取 Token 失败: {e}")
-            import traceback
-            self.logger.error(f"❌ [DB查询] 堆栈跟踪:\n{traceback.format_exc()}")
-
-        return None
-
     def _ensure_api_client(self, validate: bool = False) -> bool:
-        """确保 Tushare API Client 已初始化。Tushare 是 HTTP API，不维护长连接。
-
-        🔥 每次调用都会从数据库读取最新 Token（优先级：数据库 > 环境变量）；
-        若与当前 API Client 使用的 Token 不一致，则自动重新初始化，
-        保证用户在 Web 后台修改 Token 后立即生效，无需重启后端。
-        """
+        """从环境配置初始化客户端；Token 或中转地址变化时重建客户端。"""
+        self.last_error = None
         if not TUSHARE_AVAILABLE:
+            self.last_error = "Tushare库不可用"
             self.logger.error("❌ Tushare库不可用")
             self.api = None
             self.connected = False
             return False
 
+        token = get_tushare_token()
         try:
-            # 🔥 每次调用重新读取 Token，避免缓存旧 Token
-            db_token = self._get_token_from_database()
-            env_token = self.config.get('token') or os.getenv("TUSHARE_TOKEN", "")
-            token_candidates = []
-            if db_token:
-                token_candidates.append(("database", db_token.strip()))
-            if env_token:
-                token_candidates.append(("env", env_token.strip()))
-
-            if not token_candidates:
-                self.logger.error("❌ Tushare token未配置，请在 Web 后台或 .env 文件中配置 TUSHARE_TOKEN")
+            http_url = resolve_tushare_http_url()
+            if not token:
+                self.last_error = "Tushare Token 未配置，请在 .env 中设置 TUSHARE_TOKEN"
+                self.logger.error(self.last_error)
                 self.api = None
                 self.connected = False
+                self.token_source = None
                 return False
 
-            # 当前应使用的 Token（数据库优先）
-            effective_token = token_candidates[0][1]
-
-            # 🔥 Token 未变化且 API Client 已就绪：直接复用，避免不必要的重建
+            # Token、端点未变化且 API Client 已就绪：直接复用。
             if (
                 self.api is not None
                 and not validate
-                and getattr(self, "_current_token", None) == effective_token
+                and getattr(self, "_current_token", None) == token
+                and getattr(self, "_current_http_url", None) == http_url
             ):
                 self.connected = True
                 return True
 
-            # 🔥 Token 已变化：废弃旧 API Client，重新初始化
+            # Token 或端点已变化：重新初始化 API Client。
             if self.api is not None:
-                self.logger.info("🔄 Tushare Token 已变更，重新初始化 API Client")
+                self.logger.info("🔄 Tushare Token 或 API端点已变更，重新初始化 API Client")
 
-            for source, token in token_candidates:
-                try:
-                    self.logger.info(f"🔄 初始化 Tushare API Client (Token来源: {source})")
-                    # 直接传入 token 给 pro_api，不调用 set_token 避免写 tk.csv 文件
-                    # ts.set_token(token) 会把 token 缓存到 ~/tk.csv，在沙箱等受限环境会 Permission denied
-                    api = ts.pro_api(token)
+            self.logger.info("🔄 初始化 Tushare API Client (Token来源: env)")
+            # 显式传入 Token，避免 SDK 将凭证写入 ~/tk.csv。
+            api = ts.pro_api(token)
+            configure_tushare_http_url(api, http_url)
+            if validate:
+                test_data = test_tushare_client(api)
+                if test_data is None or test_data.empty:
+                    self.last_error = "trade_cal 返回空数据"
+                    self.api = None
+                    self.connected = False
+                    self.token_source = None
+                    return False
 
-                    if validate:
-                        test_data = api.stock_basic(list_status='L', limit=1)
-                        if test_data is None or test_data.empty:
-                            self.logger.warning(f"⚠️ Tushare Token 测试失败 (Token来源: {source})")
-                            continue
-
-                    self.api = api
-                    self._current_token = token
-                    self.connected = True
-                    self.token_source = source
-                    self.logger.info(f"✅ Tushare API Client 已就绪 (Token来源: {source})")
-                    return True
-                except Exception as e:
-                    self.logger.warning(f"⚠️ 初始化 Tushare API Client 失败 (Token来源: {source}): {e}")
-                    continue
-
-            self.api = None
-            self.connected = False
-            return False
+            self.api = api
+            self._current_token = token
+            self._current_http_url = http_url
+            self.connected = True
+            self.token_source = "env"
+            self.logger.info("✅ Tushare API Client 已就绪 (Token来源: env)")
+            return True
 
         except Exception as e:
-            self.logger.error(f"❌ 初始化 Tushare API Client 失败: {e}")
+            self.last_error = str(e).replace(token, "[REDACTED]") if token else str(e)
+            self.logger.error(f"❌ 初始化 Tushare API Client 失败: {self.last_error}")
             self.api = None
             self.connected = False
+            self.token_source = None
             return False
 
     def connect_sync(self) -> bool:
@@ -732,6 +677,8 @@ class TushareProvider(BaseStockDataProvider):
         if not self.is_available():
             return None
 
+        # 固定本次请求的客户端，避免并发连接测试/配置刷新替换 self.api。
+        api = self.api
         try:
             ts_code = self._normalize_ts_code(symbol)
             self.logger.debug(f"📊 获取Tushare财务数据: {ts_code}, 类型: {report_type}")
@@ -753,7 +700,7 @@ class TushareProvider(BaseStockDataProvider):
             # 1. 获取利润表数据 (income statement)
             try:
                 income_df = await asyncio.to_thread(
-                    self.api.income,
+                    api.income,
                     **query_params
                 )
                 if income_df is not None and not income_df.empty:
@@ -767,7 +714,7 @@ class TushareProvider(BaseStockDataProvider):
             # 2. 获取资产负债表数据 (balance sheet)
             try:
                 balance_df = await asyncio.to_thread(
-                    self.api.balancesheet,
+                    api.balancesheet,
                     **query_params
                 )
                 if balance_df is not None and not balance_df.empty:
@@ -781,7 +728,7 @@ class TushareProvider(BaseStockDataProvider):
             # 3. 获取现金流量表数据 (cash flow statement)
             try:
                 cashflow_df = await asyncio.to_thread(
-                    self.api.cashflow,
+                    api.cashflow,
                     **query_params
                 )
                 if cashflow_df is not None and not cashflow_df.empty:
@@ -795,7 +742,7 @@ class TushareProvider(BaseStockDataProvider):
             # 4. 获取财务指标数据 (financial indicators)
             try:
                 indicator_df = await asyncio.to_thread(
-                    self.api.fina_indicator,
+                    api.fina_indicator,
                     **query_params
                 )
                 if indicator_df is not None and not indicator_df.empty:
@@ -809,7 +756,7 @@ class TushareProvider(BaseStockDataProvider):
             # 5. 获取主营业务构成数据 (可选)
             try:
                 mainbz_df = await asyncio.to_thread(
-                    self.api.fina_mainbz,
+                    api.fina_mainbz,
                     **query_params
                 )
                 if mainbz_df is not None and not mainbz_df.empty:

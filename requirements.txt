@@ -22,7 +22,7 @@ tushare
 baostock
 finnhub-python
 parsel
-requests
+requests[socks]>=2.32.4
 curl-cffi>=0.6.0  # 模拟真实浏览器TLS指纹，绕过反爬虫检测
 tqdm
 pytz

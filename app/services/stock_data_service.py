@@ -190,31 +190,41 @@ class StockDataService:
             industry: 行业筛选
             page: 页码
             page_size: 每页大小
-            source: 数据源（可选），默认使用优先级最高的数据源
+            source: 数据源（可选），默认使用已入库数据中优先级最高的数据源
         Returns:
             List[StockBasicInfoExtended]: 股票列表
         """
         try:
             db = get_mongo_db()
 
-            # 🔥 使用统一的数据源优先级管理函数
-            if not source:
-                from app.core.data_source_priority import get_preferred_data_source_async
-                source = await get_preferred_data_source_async(market_category="a_shares")
-
-            # 构建查询条件
-            query = {"source": source}  # 🔥 添加数据源筛选
+            query = {}
             if market:
                 query["market"] = market
             if industry:
                 query["industry"] = industry
 
+            collection = db[self.basic_info_collection]
+            if source is None:
+                from app.core.data_source_priority import get_enabled_data_sources_async
+
+                # 浏览库存不依赖在线 provider 是否可用。先确认数据存在，
+                # 再按配置优先级选择；分页耗尽时不能切换到其他数据源。
+                priorities = await get_enabled_data_sources_async(market_category="a_shares")
+                stored_sources = await collection.distinct("source", query)
+                candidates = list(dict.fromkeys([
+                    *priorities, "local", "multi_source",
+                    *sorted(s for s in stored_sources if isinstance(s, str)),
+                ]))
+                source = next((s for s in candidates if s in stored_sources), None)
+            # None 同时兼容缺少 source 字段的历史记录。
+            query["source"] = source
+
             # 分页查询
             skip = (page - 1) * page_size
-            cursor = db[self.basic_info_collection].find(
+            cursor = collection.find(
                 query,
                 {"_id": 0}
-            ).skip(skip).limit(page_size)
+            ).sort([("symbol", 1), ("code", 1), ("_id", 1)]).skip(skip).limit(page_size)
 
             docs = await cursor.to_list(length=page_size)
 
@@ -228,7 +238,7 @@ class StockDataService:
             
         except Exception as e:
             logger.error(f"获取股票列表失败: {e}")
-            return []
+            raise
     
     async def update_stock_basic_info(
         self,

@@ -215,33 +215,30 @@ async def _test_single_adapter(adapter) -> dict:
         logger.info(f"🧪 测试 {adapter.name} 连通性 (超时: {test_timeout}秒)...")
 
         try:
-            # 对于 Tushare，强制重新连接以使用最新的数据库配置
-            if adapter.name == "tushare" and hasattr(adapter, '_provider'):
-                logger.info(f"🔄 强制 {adapter.name} 重新连接以使用最新配置...")
-                provider = adapter._provider
-                if provider:
-                    # 重置连接状态
-                    provider.connected = False
-                    provider.token_source = None
-                    # 重新连接
-                    await asyncio.wait_for(
-                        asyncio.to_thread(provider.connect_sync),
-                        timeout=test_timeout
-                    )
-
-            # 在线程池中运行 is_available() 检查
-            is_available = await asyncio.wait_for(
-                asyncio.to_thread(adapter.is_available),
-                timeout=test_timeout
-            )
+            if adapter.name == "tushare":
+                # 独立客户端按正常调用的配置解析规则测试，不重置共享财务客户端。
+                from tradingagents.dataflows.providers.china.tushare import TushareProvider
+                provider = TushareProvider()
+                is_available = await asyncio.wait_for(
+                    asyncio.to_thread(provider.connect_sync), timeout=test_timeout
+                )
+                result["test_api"] = "trade_cal"
+                result["token_source"] = provider.token_source
+                if not is_available:
+                    result["message"] = f"❌ trade_cal 测试失败: {provider.last_error or '数据源不可用'}"
+                    return result
+            else:
+                is_available = await asyncio.wait_for(
+                    asyncio.to_thread(adapter.is_available), timeout=test_timeout
+                )
 
             if is_available:
                 result["available"] = True
 
                 # 获取 Token 来源（仅 Tushare）
                 token_source = None
-                if adapter.name == "tushare" and hasattr(adapter, 'get_token_source'):
-                    token_source = adapter.get_token_source()
+                if adapter.name == "tushare":
+                    token_source = provider.token_source
 
                 if token_source == 'database':
                     result["message"] = "✅ 连接成功 (Token来源: 数据库)"

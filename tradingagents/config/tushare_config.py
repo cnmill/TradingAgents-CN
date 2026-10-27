@@ -9,6 +9,38 @@ from typing import Dict, Any, Optional
 from .env_utils import parse_bool_env, parse_str_env, get_env_info, validate_required_env_vars
 
 
+def get_tushare_token() -> str:
+    """仅使用 .env 加载到环境变量中的 Token，不回退到数据库或缓存。"""
+    token = os.getenv("TUSHARE_TOKEN", "").strip()
+    if token.startswith(("your_", "your-")):
+        return ""
+    return token
+
+
+def resolve_tushare_http_url() -> str:
+    """仅使用 TUSHARE_HTTP_URL；空值保留 SDK 默认地址。"""
+    from urllib.parse import urlsplit
+
+    http_url = os.getenv("TUSHARE_HTTP_URL", "").strip()
+    if http_url:
+        parsed = urlsplit(http_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("Tushare API端点必须是有效的 HTTP(S) URL")
+    return http_url
+
+
+def configure_tushare_http_url(api: Any, http_url: str) -> Any:
+    """设置当前 SDK 客户端的中转地址，不修改全局 SDK 配置。"""
+    if http_url:
+        api._DataApi__http_url = http_url
+    return api
+
+
+def test_tushare_client(api: Any) -> Any:
+    """两个连接测试入口使用相同的轻量接口和参数。"""
+    return api.trade_cal(exchange="SSE", start_date="20240101", end_date="20240101")
+
+
 class TushareConfig:
     """Tushare配置管理器"""
     
@@ -27,6 +59,7 @@ class TushareConfig:
         
         # 解析配置
         self.token = parse_str_env("TUSHARE_TOKEN", "")
+        self.http_url = resolve_tushare_http_url()
         self.enabled = parse_bool_env("TUSHARE_ENABLED", False)
         self.default_source = parse_str_env("DEFAULT_CHINA_DATA_SOURCE", "akshare")
         
