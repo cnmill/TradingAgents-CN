@@ -29,12 +29,16 @@ console = Console()
 def get_mongodb_client():
     """获取 MongoDB 客户端"""
     try:
+        # 连接 MongoDB（无认证模式）
+        # 注意：使用 tradingagentscn_v0_mac 数据库（实际数据所在）
         client = MongoClient('localhost', 27017, serverSelectionTimeoutMS=2000)
         # 测试连接
         client.server_info()
         return client
     except Exception as e:
         console.print(f"[red]❌ MongoDB 连接失败: {e}[/red]")
+        console.print(f"[yellow]💡 提示: 请确保 Docker 容器 'tradingagents-mongodb' 正在运行[/yellow]")
+        console.print(f"[yellow]   检查命令: docker ps | grep tradingagents-mongodb[/yellow]")
         sys.exit(1)
 
 
