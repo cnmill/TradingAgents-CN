@@ -1845,6 +1845,65 @@ class TushareProvider(BaseStockDataProvider):
             self.logger.error(f"❌ 获取板块成分股失败: {e}")
             return None
 
+    async def get_trade_dates(self, start_date: str, end_date: str) -> List[str]:
+        """返回区间内已开市的交易日（YYYYMMDD），一次请求用于批量专题同步。"""
+        if not self.is_available():
+            return []
+        try:
+            df = await asyncio.to_thread(
+                self.api.trade_cal,
+                exchange="SSE",
+                start_date=start_date.replace("-", ""),
+                end_date=end_date.replace("-", ""),
+                is_open="1",
+                fields="cal_date,is_open",
+            )
+            if df is None or df.empty:
+                return []
+            return [str(value) for value in df["cal_date"].tolist() if value]
+        except Exception as e:
+            self.logger.error(f"❌ 获取交易日历失败: {e}")
+            return []
+
+    async def get_market_endpoint(self, endpoint: str, trade_date: str) -> Optional[pd.DataFrame]:
+        """按交易日调用 Tushare 全市场专题接口，供同步器复用。"""
+        if not self.is_available():
+            return None
+        endpoint_map = {
+            "moneyflow": "moneyflow",
+            "moneyflow_dc": "moneyflow_dc",
+            "moneyflow_ths": "moneyflow_ths",
+            "moneyflow_hsgt": "moneyflow_hsgt",
+            "ths_hot": "ths_hot",
+            "dc_hot": "dc_hot",
+            "limit_list_d": "limit_list_d",
+            "limit_list_ths": "limit_list_ths",
+            "limit_cpt_list": "limit_cpt_list",
+            "limit_step": "limit_step",
+            "stk_limit": "stk_limit",
+            "daily_info": "daily_info",
+            "top_list": "top_list",
+            "top_inst": "top_inst",
+        }
+        api_method = endpoint_map.get(endpoint)
+        if not api_method or not hasattr(self.api, api_method):
+            self.logger.debug(f"⏭️ 当前 Tushare SDK 不支持接口: {endpoint}")
+            return None
+        try:
+            date_value = trade_date.replace("-", "") if trade_date else None
+            if endpoint in {"top_list", "top_inst"}:
+                params = {"date": date_value} if date_value else {}
+            elif endpoint in {"ths_hot", "dc_hot"}:
+                params = {"trade_date": date_value} if date_value else {}
+            else:
+                params = {"trade_date": date_value} if date_value else {}
+            df = await asyncio.to_thread(getattr(self.api, api_method), **params)
+            return df if df is not None and not df.empty else None
+        except Exception as e:
+            # 账户权限不足或接口尚未开放时跳过该专题，不影响其他基础数据。
+            self.logger.warning(f"⚠️ Tushare {endpoint}({trade_date}) 获取失败: {e}")
+            return None
+
     async def get_moneyflow_ths(self, trade_date: str = None,
                                ts_code: str = None,
                                start_date: str = None,

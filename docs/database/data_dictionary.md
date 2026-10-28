@@ -149,6 +149,20 @@
 | `indicators` | object | `rsi`、`macd`、`macd_signal`、`macd_hist`、`kdj_k/d/j`、`boll_upper/mid/lower`、`cci`、`williams_r`、`bias`、`roc` 等 |
 | `data_source`、`created_at`、`updated_at` | string/date | 来源和维护时间 |
 
+### 3.8 Tushare 市场专题与同花顺数据集合
+
+以下集合由 Tushare 专属同步服务写入，集合名统一为 `tushare_<endpoint>`，文档保留 Tushare 原始字段，并额外写入 `source: "tushare"`、`endpoint`、`synced_at` 和内部幂等字段 `_topic_key`。金额、成交量和指数点位的单位以 Tushare 接口文档为准，不在入库层擅自换算。
+
+| 集合 | 接口 | 主要字段 | 业务用途 |
+|---|---|---|---|
+| `tushare_ths_hot` | `ths_hot` | `trade_date`、`ts_code`、`ts_name`、`rank`、`pct_change`、`hot`、`concept`、`cons_num` | 同花顺热榜个股排名和热度 |
+| `tushare_dc_hot` | `dc_hot` | `trade_date`、`ts_code`、`ts_name`、`rank`、`pct_change`、`hot`、`concept`、`new` | 东方财富热榜个股排名和热度 |
+| `tushare_ths_index` | `ths_index` | `ts_code`、`name`、`count`、`exchange`、`type`、`list_date`、`weight` | 同花顺概念/行业指数目录 |
+| `tushare_ths_daily` | `ths_daily` | `ts_code`、`trade_date`、`open`、`high`、`low`、`close`、`change`、`pct_change`、`vol`、`amount` | 同花顺指数日线行情 |
+| `tushare_ths_member` | `ths_member` | `ts_code`、`con_code`、`con_name`、`name`、`weight` | 同花顺指数或板块成分股 |
+
+这些集合通常以 `trade_date`、`ts_code` 和 `_topic_key` 作为查询维度。`ths_index` 与 `ths_member` 可能没有交易日期，查询时应使用 `ts_code` 和 `synced_at`；`ths_member` 的幂等键由指数代码、成分股代码和名称组合生成。专题集合的 `source` 一律为 `tushare`，不要与其他数据源的同名热榜或板块数据直接混合统计。
+
 ## 4. 分析、用户和平台集合
 
 下列集合由平台服务使用，字段可能随功能扩展；AI 查询时应先用投影限制字段，并按 `user_id` 隔离用户数据。

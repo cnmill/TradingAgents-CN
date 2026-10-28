@@ -29,6 +29,7 @@ class InitializationStats:
     financial_records: int = 0
     quotes_count: int = 0
     news_count: int = 0
+    market_topic_records: int = 0
     errors: List[Dict[str, Any]] = None
 
     def __post_init__(self):
@@ -84,6 +85,7 @@ class TushareInitService:
                 - 'financial': 财务数据
                 - 'quotes': 最新行情
                 - 'news': 新闻数据
+                - 'market_topics': Tushare资金流向、涨停/连板等专题数据
                 - None: 同步所有数据（默认）
 
         Returns:
@@ -91,7 +93,7 @@ class TushareInitService:
         """
         # 如果未指定sync_items，则同步所有数据
         if sync_items is None:
-            sync_items = ['basic_info', 'historical', 'financial', 'quotes']
+            sync_items = ['basic_info', 'historical', 'financial', 'quotes', 'market_topics']
             if enable_multi_period:
                 sync_items.extend(['weekly', 'monthly'])
 
@@ -151,6 +153,11 @@ class TushareInitService:
                 await self._step_initialize_news_data(historical_days)
             else:
                 logger.info("⏭️ 跳过新闻数据同步")
+
+            if 'market_topics' in sync_items:
+                await self._step_initialize_market_topics(historical_days)
+            else:
+                logger.info("⏭️ 跳过Tushare市场专题数据同步")
 
             # 最后: 验证数据完整性
             await self._step_verify_data_integrity()
@@ -370,6 +377,23 @@ class TushareInitService:
 
         self.stats.completed_steps += 1
 
+    async def _step_initialize_market_topics(self, historical_days: int):
+        """同步 Tushare 按交易日提供的资金流向、涨停/连板专题数据。"""
+        self.stats.current_step = f"同步Tushare市场专题数据({historical_days}天)"
+        logger.info(f"📊 {self.stats.current_step}...")
+        try:
+            end_date = datetime.now().strftime('%Y%m%d')
+            # 基础信息同步已拉取最新交易日，历史专题从前一日开始，避免重复请求。
+            start_date = '19900101' if historical_days >= 3650 else (
+                datetime.now() - timedelta(days=historical_days + 1)
+            ).strftime('%Y%m%d')
+            result = await self.sync_service.sync_market_topic_data(start_date, end_date)
+            self.stats.market_topic_records = result.get("records", 0) if result else 0
+            logger.info(f"✅ Tushare市场专题数据完成: {self.stats.market_topic_records}条记录")
+        except Exception as e:
+            logger.warning(f"⚠️ Tushare市场专题数据失败: {e}（继续后续步骤）")
+        self.stats.completed_steps += 1
+
     async def _step_verify_data_integrity(self):
         """步骤6: 验证数据完整性"""
         self.stats.current_step = "验证数据完整性"
@@ -421,7 +445,8 @@ class TushareInitService:
                 "monthly_records": self.stats.monthly_records,   # 月线数据
                 "financial_records": self.stats.financial_records,
                 "quotes_count": self.stats.quotes_count,
-                "news_count": self.stats.news_count
+                "news_count": self.stats.news_count,
+                "market_topic_records": self.stats.market_topic_records,
             },
             "errors": self.stats.errors,
             "current_step": self.stats.current_step

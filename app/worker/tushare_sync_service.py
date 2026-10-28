@@ -3,9 +3,14 @@ Tushare数据同步服务
 负责将Tushare数据同步到MongoDB标准化集合
 """
 import asyncio
+import hashlib
+import json
+import logging
+import pandas as pd
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
-import logging
+
+from pymongo import UpdateOne
 
 from tradingagents.dataflows.providers.china.tushare import TushareProvider
 from app.services.stock_data_service import get_stock_data_service
@@ -156,6 +161,10 @@ class TushareSyncService:
                 if i + self.batch_size < len(stock_list):
                     await asyncio.sleep(self.rate_limit_delay)
             
+            # 基础信息同步同时刷新最新交易日的 Tushare 专题数据（按交易日批量接口）。
+            topic_result = await self.sync_market_topic_data()
+            stats["market_topic"] = topic_result
+
             # 3. 完成统计
             stats["end_time"] = datetime.utcnow()
             stats["duration"] = (stats["end_time"] - stats["start_time"]).total_seconds()
@@ -258,6 +267,128 @@ class TushareSyncService:
         
         return batch_stats
     
+    # ==================== Tushare 市场专题数据 ====================
+
+    async def sync_market_topic_data(
+        self,
+        start_date: str = None,
+        end_date: str = None,
+        job_id: str = None,
+    ) -> Dict[str, Any]:
+        """批量同步 Tushare 资金流向、涨停/连板等按交易日提供的专题数据。"""
+        end_date = end_date or datetime.now().strftime("%Y%m%d")
+        start_date = start_date or end_date
+        endpoint_names = (
+            "moneyflow", "moneyflow_dc", "moneyflow_ths",
+            "moneyflow_hsgt",
+            "ths_hot", "dc_hot",
+            "limit_list_d", "limit_list_ths", "limit_cpt_list",
+            "limit_step", "stk_limit", "daily_info", "top_list", "top_inst",
+        )
+        stats: Dict[str, Any] = {
+            "start_date": start_date, "end_date": end_date,
+            "trade_days": 0, "records": 0, "success_count": 0,
+            "endpoint_records": {}, "errors": [],
+        }
+        try:
+            trade_dates = await self.provider.get_trade_dates(start_date, end_date)
+            stats["trade_days"] = len(trade_dates)
+            if not trade_dates:
+                logger.info("⏭️ 指定区间没有交易日，跳过 Tushare 市场专题同步")
+                return stats
+            for index, trade_date in enumerate(trade_dates):
+                if job_id and await self._should_stop(job_id):
+                    stats["stopped"] = True
+                    break
+                for endpoint in endpoint_names:
+                    try:
+                        frame = await self.provider.get_market_endpoint(endpoint, trade_date)
+                        if frame is None or frame.empty:
+                            continue
+                        saved = await self._bulk_save_market_topic(endpoint, trade_date, frame)
+                        stats["records"] += saved
+                        stats["success_count"] += 1
+                        stats["endpoint_records"][endpoint] = stats["endpoint_records"].get(endpoint, 0) + saved
+                    except Exception as e:
+                        stats["errors"].append({"endpoint": endpoint, "trade_date": trade_date, "error": str(e)})
+                logger.info("📊 Tushare市场专题同步进度: %s/%s (%s)", index + 1, len(trade_dates), trade_date)
+            stats["ths_reference"] = await self.sync_ths_reference_data(start_date, end_date)
+            return stats
+        except Exception as e:
+            logger.error("❌ Tushare市场专题同步失败: %s", e)
+            stats["errors"].append({"error": str(e)})
+            return stats
+
+    async def _bulk_save_market_topic(self, endpoint: str, trade_date: str, frame) -> int:
+        """将单个接口的结果转为幂等批量 upsert，避免逐行请求/写入。"""
+        collection = self.db[f"tushare_{endpoint}"]
+        await collection.create_index([("trade_date", 1), ("_topic_key", 1)], unique=True, name="trade_date_topic_key")
+        operations = []
+        for row in frame.to_dict("records"):
+            document = {"source": "tushare", "endpoint": endpoint, "synced_at": get_utc8_now()}
+            for key, value in row.items():
+                if hasattr(value, "item"):
+                    value = value.item()
+                if value is not None:
+                    try:
+                        if value != value:  # NaN
+                            value = None
+                    except Exception:
+                        pass
+                document[key] = value
+            document["trade_date"] = str(document.get("trade_date") or trade_date).replace("-", "")
+            natural_key = document.get("ts_code") or document.get("name") or document.get("id")
+            if endpoint == "ths_member":
+                natural_key = "|".join(str(document.get(field) or "") for field in ("ts_code", "con_code", "code", "name"))
+            if not natural_key:
+                # daily_info 等接口可能没有代码字段；用业务字段生成稳定键，避免同日行互相覆盖。
+                natural_key = hashlib.sha1(
+                    json.dumps(
+                        {k: v for k, v in document.items() if k not in {"synced_at", "source", "endpoint"}},
+                        sort_keys=True, default=str,
+                    ).encode("utf-8")
+                ).hexdigest()
+            document["_topic_key"] = str(natural_key)
+            identity = {"trade_date": document["trade_date"], "_topic_key": document["_topic_key"]}
+            operations.append(UpdateOne(identity, {"$set": document}, upsert=True))
+        saved = 0
+        for offset in range(0, len(operations), 1000):
+            result = await collection.bulk_write(operations[offset:offset + 1000], ordered=False)
+            saved += (result.upserted_count or 0) + (result.modified_count or 0)
+        return len(operations)
+
+    async def sync_ths_reference_data(self, start_date: str = None, end_date: str = None) -> Dict[str, Any]:
+        """同步同花顺指数目录、日线和成分股；接口无权限时跳过，不影响其他专题。"""
+        result = {"index_records": 0, "daily_records": 0, "member_records": 0, "errors": []}
+        try:
+            index_frames = []
+            for index_type in ("N", "S", "R"):
+                frame = await self.provider.get_ths_index_list(index_type=index_type)
+                if frame is not None and not frame.empty:
+                    index_frames.append(frame)
+            if not index_frames:
+                return result
+            index_frame = pd.concat(index_frames, ignore_index=True).drop_duplicates(subset=["ts_code"])
+            result["index_records"] = await self._bulk_save_market_topic("ths_index", "", index_frame)
+            # 目录接口返回的指数代码作为后续请求入口。按一次同步区间批量请求日线，避免逐股票请求。
+            ts_code_series = index_frame["ts_code"] if "ts_code" in index_frame.columns else []
+            index_codes = [str(value) for value in ts_code_series.tolist() if value]
+            for ts_code in index_codes:
+                try:
+                    frame = await self.provider.get_ths_daily(ts_code, start_date=start_date, end_date=end_date)
+                    if frame is not None and not frame.empty:
+                        result["daily_records"] += await self._bulk_save_market_topic("ths_daily", "", frame)
+                    members = await self.provider.get_ths_member(ts_code=ts_code)
+                    if members is not None and not members.empty:
+                        result["member_records"] += await self._bulk_save_market_topic("ths_member", "", members)
+                except Exception as exc:
+                    result["errors"].append({"ts_code": ts_code, "error": str(exc)})
+            return result
+        except Exception as exc:
+            logger.warning("⚠️ 同花顺指数专题同步失败: %s", exc)
+            result["errors"].append({"error": str(exc)})
+            return result
+
     # ==================== 实时行情同步 ====================
     
     async def sync_realtime_quotes(self, symbols: List[str] = None, force: bool = False) -> Dict[str, Any]:
